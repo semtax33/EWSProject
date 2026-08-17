@@ -5,6 +5,7 @@
 ```powershell
 $env:PYTHONIOENCODING='utf-8'
 python build_market_breadth.py
+python build_marcap_kospi200.py
 python download_alfred_vintages.py
 python download_investable_returns.py
 python run_pipeline.py --run-id <고유한_run_id>
@@ -13,10 +14,11 @@ python run_benchmark_allocation_research.py --parent-run runs\<고유한_run_id>
 python -m unittest discover -s tests -v
 ```
 
-기본 설정은 `download_investable_returns.py`가 만든 KODEX 200 adjusted close를
-포트폴리오 수익률에 사용한다. 다른 KOSPI200 TR/NTR 또는 ETF를 쓰려면 adjusted
-close 또는 total-return 열이 있는 CSV를 명시한다. 단순 `close` 열만 있는 파일은
-strict gate를 통과하지 않는다.
+KOSPI200 기본 설정은 marcap 패널에서 월말 KOSPI 보통주 시가총액 상위
+200종목을 선택하고 다음 달에 적용한 가격수익 프록시를 포트폴리오 기준으로
+사용한다. 공식 역사적 KOSPI200 membership가 없는 근사치이므로 strict
+investable-return gate는 통과하지 않는다. KOSPI200 TR/NTR 또는 ETF를 쓰려면
+adjusted close 또는 total-return 열이 있는 CSV를 명시한다.
 
 ```powershell
 python run_pipeline.py --run-id <고유한_run_id> --investable-market-file <ETF_or_TR_CSV>
@@ -28,7 +30,7 @@ python run_pipeline.py --run-id <고유한_run_id> --investable-market-file <ETF
 
 | `--market` | 예측 타깃(가격지수) | 투자 가능 수익률 |
 |---|---|---|
-| `kospi200` | KOSPI200 `^KS200` | KODEX 200 `069500.KS` adjusted close |
+| `kospi200` | KOSPI200 `^KS200` | marcap KOSPI top-200 price proxy |
 | `sp500` | S&P 500 `^GSPC` | SPY adjusted close |
 | `nasdaq100` | NASDAQ-100 `^NDX` | QQQ adjusted close |
 
@@ -77,6 +79,10 @@ return을 우선하고 fold Sharpe와 방향 안정성을 보조 순위로 사�
 holdout은 이 선택을 바꿀 수 없고 실패 시에만 `static_50_50`으로 veto한다.
 `smoothed_linear`는 3개월 causal EWMA로 EWS를 완화한 추가 후보이며, 이 정책 역시
 동일한 pre-holdout gate를 통과해야 사용할 수 있다.
+
+분류 성과는 3개월 후 label이 완성된 월까지만 평가한다. 포트폴리오 성과는 label이
+아직 완성되지 않은 최근 월도 purged expanding fit으로 score-only 신호를 생성하고,
+다음 달 실행 규칙을 적용하여 최신 완료 월까지 평가한다.
 
 배분 연구 실행이 끝나면 `<배분_run_id>` 폴더에 다음 시각화가 자동 생성된다.
 

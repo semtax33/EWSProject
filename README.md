@@ -15,7 +15,7 @@
 
 | `--market` | 예측 대상 가격지수 | 투자 가능 수익률 |
 |---|---|---|
-| `kospi200` | KOSPI200 (`^KS200`) | KODEX 200 (`069500.KS`) adjusted close |
+| `kospi200` | KOSPI200 (`^KS200`) | marcap KOSPI top-200 price proxy |
 | `sp500` | S&P 500 (`^GSPC`) | SPY adjusted close |
 | `nasdaq100` | NASDAQ-100 (`^NDX`) | QQQ adjusted close |
 
@@ -79,7 +79,7 @@ python download_market_data.py --market nasdaq100
 
 | 시장 | 신호/타깃 데이터 | 투자 가능 수익률 데이터 |
 |---|---|---|
-| KOSPI200 | `Data/MARKET/KOSPI.csv` | `Data/MARKET/KODEX200_adjusted.csv` |
+| KOSPI200 | `Data/MARKET/KOSPI.csv` | `Data/DERIVED/marcap_kospi200_proxy.csv` |
 | S&P 500 | `Data/MARKET/SP500.csv` | `Data/MARKET/SPY_adjusted.csv` |
 | NASDAQ-100 | `Data/MARKET/NASDAQ100.csv` | `Data/MARKET/QQQ_adjusted.csv` |
 
@@ -175,6 +175,20 @@ python run_pipeline.py `
   --investable-market-file Data\MARKET\my_total_return.csv `
   --run-id ews_custom_return_YYYYMMDD
 ```
+
+KOSPI200 기본 백테스트는 `Data/MARKET/KOREA_STOCK_PRICE.csv`의 marcap
+패널에서 각 월말 KOSPI 보통주 시가총액 상위 200종목을 고른 뒤 다음 달에
+적용하는 가격수익 프록시를 사용합니다. 공식 역사적 KOSPI200 편입 이력이
+없는 근사치이므로 공식 지수와 동일하다고 간주하지 않으며 strict
+investable-return gate도 통과하지 않습니다. 캐시는 다음 명령으로 갱신합니다.
+
+```powershell
+python build_marcap_kospi200.py
+```
+
+분류 AUC와 IC는 3개월 후 정답이 완성된 달까지만 계산합니다. 포트폴리오
+백테스트는 이후 score-only 신호도 당시 이용 가능한 정보만으로 생성하여 최신
+완료 월까지 계산합니다.
 
 단순 종가(`close`)만 있는 파일은 strict investable-return gate를 통과하지 않습니다.
 

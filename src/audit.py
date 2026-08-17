@@ -225,6 +225,9 @@ def market_return_role_registry(
     market_ticker="^KS200",
     investable_instrument="KOSPI200 TR/NTR or tracking ETF adjusted return",
     investable_ticker=None,
+    portfolio_return_type=None,
+    portfolio_notes=None,
+    portfolio_deployment_eligible=None,
 ):
     """Keep model target identity distinct from an investable total return."""
     return pd.DataFrame(
@@ -245,14 +248,18 @@ def market_return_role_registry(
                 "instrument": investable_instrument,
                 "source": str(investable_market_file) if investable_market_file else None,
                 "ticker": investable_ticker,
-                "return_type": "total/investable return net of product frictions",
+                "return_type": portfolio_return_type or (
+                    "total/investable return net of product frictions"
+                ),
                 "available": investable_market_file is not None,
                 "used_in_current_run": investable_market_file is not None,
                 "deployment_eligible": bool(
-                    investable_market_file is not None
+                    portfolio_deployment_eligible
+                    if portfolio_deployment_eligible is not None
+                    else investable_market_file is not None
                     and investable_distribution_adjusted
                 ),
-                "notes": (
+                "notes": portfolio_notes or (
                     "distribution-adjusted investable return source"
                     if investable_market_file is not None
                     and investable_distribution_adjusted

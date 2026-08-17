@@ -18,6 +18,12 @@ MARKET_BREADTH_FILE = ROOT_DIR / "Data" / "DERIVED" / "korea_market_breadth.parq
 MARKET_BREADTH_METADATA_FILE = (
     ROOT_DIR / "Data" / "DERIVED" / "korea_market_breadth.metadata.json"
 )
+MARCAP_KOSPI200_FILE = (
+    ROOT_DIR / "Data" / "DERIVED" / "marcap_kospi200_proxy.csv"
+)
+MARCAP_KOSPI200_METADATA_FILE = (
+    ROOT_DIR / "Data" / "DERIVED" / "marcap_kospi200_proxy.metadata.json"
+)
 
 # Backward-compatible alias.  The source file contains KOSPI200 (^KS200),
 # not the broad KOSPI composite index.

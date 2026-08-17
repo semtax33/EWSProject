@@ -42,6 +42,8 @@ from src.config import (
     GROUP_CANDIDATES_PER_GROUP,
     IC_ROLLING_WINDOW,
     KOREA_STOCK_PANEL_FILE,
+    MARCAP_KOSPI200_FILE,
+    MARCAP_KOSPI200_METADATA_FILE,
     MARKET_BREADTH_FILE,
     MARKET_BREADTH_METADATA_FILE,
     MARKET_NAME,
@@ -105,6 +107,7 @@ from src.experiment import (
 )
 from src.economic_review import add_economic_review_drafts
 from src.market_breadth import load_market_breadth, market_breadth_metadata
+from src.marcap_kospi200 import ensure_marcap_kospi200_proxy
 from src.features import (
     build_feature_matrix,
     build_cross_asset_features,
@@ -219,6 +222,51 @@ def _model_runtime_kwargs(model_name, *, mlp_params=None):
     return {"random_state": RANDOM_SEED}
 
 
+def _last_completed_month(index, asof_date=None):
+    """Return the latest month-end that is complete as of the run date."""
+    asof = pd.Timestamp(asof_date or pd.Timestamp.today()).tz_localize(None)
+    values = pd.DatetimeIndex(index).tz_localize(None)
+    completed = values[values.to_period("M") < asof.to_period("M")]
+    if completed.empty:
+        raise ValueError("No completed market month is available")
+    return completed.max().to_period("M").to_timestamp("M")
+
+
+def extend_prediction_tail(
+    prediction,
+    X,
+    y,
+    *,
+    eval_end,
+    min_train,
+    purge,
+    refit_every,
+    model_type,
+    model_kwargs=None,
+):
+    """Add score-only months whose forward classification label is incomplete."""
+    observed = prediction.dropna().sort_index()
+    if observed.empty:
+        raise ValueError("Cannot extend an empty historical prediction")
+    eval_end = pd.Timestamp(eval_end).to_period("M").to_timestamp("M")
+    tail_start = observed.index.max() + pd.offsets.MonthEnd(1)
+    if tail_start > eval_end:
+        return observed
+    tail = walk_forward_predict(
+        X,
+        y,
+        eval_start=tail_start,
+        eval_end=eval_end,
+        min_train=min_train,
+        purge=purge,
+        refit_every=refit_every,
+        model_type=model_type,
+        **(model_kwargs or {}),
+    ).dropna()
+    combined = pd.concat([observed, tail]).sort_index()
+    return combined.loc[~combined.index.duplicated(keep="last")]
+
+
 def _selection_model_type(model_name):
     return "svm_rank" if model_name == "svm" else model_name
 
@@ -267,6 +315,7 @@ def evaluate_backtest(
     name,
     evaluation_index=None,
     allocation_policy=None,
+    benchmark_name=None,
 ):
     """Evaluate dynamic and all benchmarks on one identical window."""
 
@@ -290,7 +339,7 @@ def evaluate_backtest(
             f"{name} Same Exposure ({avg_weight:.1%})",
             "same_exposure_return",
         ),
-        (f"{name} {MARKET_NAME} 100%", "market_return"),
+        (f"{name} {benchmark_name or MARKET_NAME} 100%", "market_return"),
     ]
 
     rows = []
@@ -451,6 +500,9 @@ def _manifest_config(
     market_profile,
     investable_market_file=None,
     *,
+    portfolio_instrument=None,
+    portfolio_ticker=None,
+    portfolio_return_role=None,
     core_families=None,
     core_transform_tokens=None,
     optional_families=None,
@@ -469,7 +521,11 @@ def _manifest_config(
         "signal_market_role": f"{market_profile.display_name} price index target",
         "investable_instrument": market_profile.investable_instrument,
         "investable_ticker": market_profile.investable_ticker,
-        "portfolio_return_role": (
+        "portfolio_benchmark_instrument": (
+            portfolio_instrument or market_profile.investable_instrument
+        ),
+        "portfolio_benchmark_ticker": portfolio_ticker,
+        "portfolio_return_role": portfolio_return_role or (
             "audited investable return series"
             if investable_market_file is not None
             else f"{market_profile.display_name} price-index proxy; operational gate blocked"
@@ -666,11 +722,31 @@ def main(
     core_families = required_core_families(market_profile)
     core_transform_tokens = required_core_transform_tokens(market_profile)
     optional_families = optional_market_families(market_profile)
-    investable_market_file = (
-        Path(investable_market_file)
-        if investable_market_file is not None
-        else market_profile.investable_file
+    explicit_investable_override = investable_market_file is not None
+    use_marcap_kospi200_proxy = (
+        market_profile.key == "kospi200" and not explicit_investable_override
     )
+    if use_marcap_kospi200_proxy:
+        ensure_marcap_kospi200_proxy(
+            KOREA_STOCK_PANEL_FILE,
+            MARCAP_KOSPI200_FILE,
+            MARCAP_KOSPI200_METADATA_FILE,
+        )
+        investable_market_file = Path(MARCAP_KOSPI200_FILE)
+        portfolio_instrument = "Marcap KOSPI Top-200 Price Proxy"
+        portfolio_ticker = None
+        portfolio_return_role = (
+            "point-in-time monthly-rebalanced KOSPI market-cap top-200 price proxy"
+        )
+    else:
+        investable_market_file = (
+            Path(investable_market_file)
+            if investable_market_file is not None
+            else market_profile.investable_file
+        )
+        portfolio_instrument = market_profile.investable_instrument
+        portfolio_ticker = market_profile.investable_ticker
+        portfolio_return_role = "audited investable return series"
     if not market_file.is_file():
         raise FileNotFoundError(
             f"Missing {market_profile.display_name} market file: {market_file}. "
@@ -730,6 +806,9 @@ def main(
             primary_target_spec=active_primary_target_spec,
             fixed_primary_features=fixed_primary_features,
             primary_feature_provenance=primary_feature_provenance,
+            portfolio_instrument=portfolio_instrument,
+            portfolio_ticker=portfolio_ticker,
+            portfolio_return_role=portfolio_return_role,
         ),
         data_files=data_files,
         code_files=code_files,
@@ -748,8 +827,7 @@ def main(
     print(f"Run directory: {RESULT_DIR}")
     print(
         f"Market: {market_profile.display_name} ({market_profile.ticker}) | "
-        f"investable: {market_profile.investable_instrument} "
-        f"({market_profile.investable_ticker})"
+        f"portfolio benchmark: {portfolio_instrument}"
     )
 
     # ① DATA
@@ -808,8 +886,22 @@ def main(
         investable_distribution_adjusted=investable_distribution_adjusted,
         market_name=market_profile.display_name,
         market_ticker=market_profile.ticker,
-        investable_instrument=market_profile.investable_instrument,
-        investable_ticker=market_profile.investable_ticker,
+        investable_instrument=portfolio_instrument,
+        investable_ticker=portfolio_ticker,
+        portfolio_return_type=(
+            "point-in-time market-cap-weighted price return proxy"
+            if use_marcap_kospi200_proxy
+            else None
+        ),
+        portfolio_notes=(
+            "marcap KOSPI common-share top-200 proxy; official historical "
+            "KOSPI200 membership is unavailable; excludes distributions"
+            if use_marcap_kospi200_proxy
+            else None
+        ),
+        portfolio_deployment_eligible=(
+            False if use_marcap_kospi200_proxy else None
+        ),
     )
     market_roles.to_csv(RESULT_DIR / "market_return_role_registry.csv", index=False)
 
@@ -2485,6 +2577,43 @@ def main(
         ews = (prediction * 100).rename("ews")
         ews.to_csv(RESULT_DIR / f"{name}_test_ews.csv")
 
+    portfolio_prediction_end = min(
+        _last_completed_month(market.index),
+        _last_completed_month(portfolio_market.index),
+    )
+    portfolio_predictions = {}
+    for model_name, prediction in predictions.items():
+        model_target_y = mlp_y if model_name == "mlp" else y
+        portfolio_predictions[model_name] = extend_prediction_tail(
+            prediction,
+            X[model_feature_sets[model_name]],
+            model_target_y,
+            eval_end=portfolio_prediction_end,
+            min_train=_model_min_train_months(model_name),
+            purge=FORECAST_HORIZON,
+            refit_every=(MLP_REFIT_EVERY if model_name == "mlp" else 1),
+            model_type=model_name,
+            model_kwargs=_model_runtime_kwargs(
+                model_name, mlp_params=active_mlp_params
+            ),
+        )
+        (portfolio_predictions[model_name] * 100).rename("ews").to_csv(
+            RESULT_DIR / f"{model_name}_portfolio_ews.csv"
+        )
+    original_reference_portfolio_prediction = extend_prediction_tail(
+        original_reference_prediction,
+        X[original_selected_features],
+        y,
+        eval_end=portfolio_prediction_end,
+        min_train=_model_min_train_months(FINAL_MODEL_TYPE),
+        purge=FORECAST_HORIZON,
+        refit_every=1,
+        model_type=FINAL_MODEL_TYPE,
+        model_kwargs=_model_runtime_kwargs(
+            FINAL_MODEL_TYPE, mlp_params=active_mlp_params
+        ),
+    )
+
     model_comparison = pd.DataFrame(
         [
             _model_comparison_row(
@@ -2589,7 +2718,7 @@ def main(
         [
             nested_prediction.loc[: pre_holdout_end - pd.offsets.MonthEnd(1)],
             sizing_seed_predictions[FINAL_MODEL_TYPE],
-            final_prediction,
+            portfolio_predictions[FINAL_MODEL_TYPE],
         ]
     ).sort_index()
     combined_sizing_scores = combined_sizing_scores[
@@ -2604,7 +2733,7 @@ def main(
             transaction_cost_scenarios=TRANSACTION_COST_SCENARIOS_BPS,
             sizing_config=sizing_config,
             evaluation_start=split["test_start"],
-            evaluation_end=split["test_end"],
+            evaluation_end=portfolio_prediction_end,
         )
     )
     holdout_comparison["selection_use"] = "diagnostic_only_not_used_for_selection"
@@ -2615,7 +2744,7 @@ def main(
         RESULT_DIR / "research_holdout_position_sizing_monthly.csv"
     )
     original_raw_ews = pd.concat(
-        [original_seed_prediction, original_reference_prediction]
+        [original_seed_prediction, original_reference_portfolio_prediction]
     ).sort_index() * 100
     original_target_weight = target_weight_from_ews(
         original_raw_ews, policy="linear", **sizing_config
@@ -2630,7 +2759,7 @@ def main(
         max_stock_weight=MAX_STOCK_WEIGHT,
         transaction_cost_bps=TRANSACTION_COST_BPS,
         verbose=False,
-        market_name=MARKET_NAME,
+        market_name=portfolio_instrument,
     )
     original_backtest.to_csv(
         RESULT_DIR / "original_reference_holdout_backtest.csv"
@@ -2639,6 +2768,7 @@ def main(
         original_backtest,
         f"Original-reference {final_label} linear",
         allocation_policy="linear",
+        benchmark_name=portfolio_instrument,
     )
     original_signal_metrics = _model_comparison_row(
         FINAL_MODEL_TYPE, original_reference_prediction, y
@@ -2659,7 +2789,7 @@ def main(
     print()
     print("⑥ Logistic / SVM / MLP 개별 백테스트")
     backtests = {}
-    for name, prediction in predictions.items():
+    for name, prediction in portfolio_predictions.items():
         raw_ews = (prediction * 100).rename("raw_ews")
         model_nested_history = (
             mlp_nested_prediction if name == "mlp" else nested_prediction
@@ -2696,7 +2826,7 @@ def main(
             min_stock_weight=MIN_STOCK_WEIGHT,
             max_stock_weight=MAX_STOCK_WEIGHT,
             transaction_cost_bps=TRANSACTION_COST_BPS,
-            market_name=MARKET_NAME,
+            market_name=portfolio_instrument,
         )
         backtests[name] = backtest
         backtest.to_csv(RESULT_DIR / f"{name}_backtest.csv")
@@ -2722,6 +2852,7 @@ def main(
                 allocation_policy=(
                     mlp_selected_policy if name == "mlp" else selected_policy
                 ),
+                benchmark_name=portfolio_instrument,
             )
         )
     performance = pd.DataFrame(performance_rows)
@@ -3581,7 +3712,7 @@ def main(
         y=y,
         features=selected_features,
         horizon=FORECAST_HORIZON,
-        asof_date=market.index.max(),
+        asof_date=portfolio_prediction_end,
         min_train=latest_min_train,
         model_type=FINAL_MODEL_TYPE,
         market_name=MARKET_NAME,
@@ -3596,7 +3727,7 @@ def main(
     current_score_history = pd.concat(
         [
             nested_prediction * 100,
-            final_prediction * 100,
+            portfolio_predictions[FINAL_MODEL_TYPE] * 100,
             pd.Series({latest["date"]: current_ews}),
         ]
     ).sort_index()
@@ -3609,9 +3740,8 @@ def main(
         **sizing_config,
     )
     current_stock_weight = float(current_target_history.loc[latest["date"]])
-    prior_targets = current_target_history.loc[: latest["date"]].iloc[:-1].dropna()
-    current_executed_weight = (
-        float(prior_targets.iloc[-1]) if not prior_targets.empty else None
+    current_executed_weight = float(
+        current_target_history.shift(1).loc[latest["date"]]
     )
     current_cash_weight = 1.0 - current_stock_weight
 
@@ -3627,6 +3757,8 @@ def main(
         "market_ticker": market_profile.ticker,
         "investable_instrument": market_profile.investable_instrument,
         "investable_ticker": market_profile.investable_ticker,
+        "portfolio_benchmark_instrument": portfolio_instrument,
+        "portfolio_benchmark_ticker": portfolio_ticker,
         "model": final_label,
         "target_mode": active_primary_target_spec["mode"],
         "target_spec": active_primary_target_spec,
@@ -3678,6 +3810,8 @@ def main(
         "market_ticker": market_profile.ticker,
         "investable_instrument": market_profile.investable_instrument,
         "investable_ticker": market_profile.investable_ticker,
+        "portfolio_benchmark_instrument": portfolio_instrument,
+        "portfolio_benchmark_ticker": portfolio_ticker,
         "status": (
             "ready_for_next_observation"
             if forward_shadow_eligible
@@ -3727,37 +3861,17 @@ def main(
         y=mlp_y,
         features=model_feature_sets["mlp"],
         horizon=FORECAST_HORIZON,
-        asof_date=market.index.max(),
+        asof_date=portfolio_prediction_end,
         min_train=_model_min_train_months("mlp"),
         model_type="mlp",
         market_name=MARKET_NAME,
         **_model_runtime_kwargs("mlp", mlp_params=active_mlp_params),
     )
     mlp_current_ews = float(mlp_latest["ews"])
-    # Historical holdout predictions stop where the 3-month forward target is
-    # observable.  Produce the missing signal-only tail separately so the
-    # execution weight always comes from exactly t-1, never the last labelled
-    # observation several months earlier.
-    mlp_tail_start = predictions["mlp"].index.max() + pd.offsets.MonthEnd(1)
-    if mlp_tail_start <= mlp_latest["date"]:
-        mlp_unlabelled_score_tail = walk_forward_predict(
-            X[model_feature_sets["mlp"]],
-            mlp_y,
-            eval_start=mlp_tail_start,
-            eval_end=mlp_latest["date"],
-            min_train=_model_min_train_months("mlp"),
-            purge=FORECAST_HORIZON,
-            refit_every=MLP_REFIT_EVERY,
-            model_type="mlp",
-            **_model_runtime_kwargs("mlp", mlp_params=active_mlp_params),
-        )
-    else:
-        mlp_unlabelled_score_tail = pd.Series(dtype=float)
     mlp_current_score_history = pd.concat(
         [
             mlp_nested_prediction * 100,
-            predictions["mlp"] * 100,
-            mlp_unlabelled_score_tail * 100,
+            portfolio_predictions["mlp"] * 100,
             pd.Series({mlp_latest["date"]: mlp_current_ews}),
         ]
     ).sort_index()
@@ -3804,6 +3918,8 @@ def main(
         "market_ticker": market_profile.ticker,
         "investable_instrument": market_profile.investable_instrument,
         "investable_ticker": market_profile.investable_ticker,
+        "portfolio_benchmark_instrument": portfolio_instrument,
+        "portfolio_benchmark_ticker": portfolio_ticker,
         "model": "MLP",
         "target_mode": active_mlp_target_spec["mode"],
         "target_spec": active_mlp_target_spec,
@@ -3896,6 +4012,8 @@ def main(
         "market_ticker": market_profile.ticker,
         "investable_instrument": market_profile.investable_instrument,
         "investable_ticker": market_profile.investable_ticker,
+        "portfolio_benchmark_instrument": portfolio_instrument,
+        "portfolio_benchmark_ticker": portfolio_ticker,
         "signal_market_file": "market_monthly.csv",
         "signal_market_column": MARKET_SERIES_NAME,
         "portfolio_price_file": "portfolio_return_source_monthly.csv",
@@ -4003,7 +4121,9 @@ def main(
             },
             "historical_research_holdout": {
                 "start": split["test_start"],
-                "end": split["test_end"],
+                "end": portfolio_prediction_end,
+                "labelled_signal_end": split["test_end"],
+                "portfolio_performance_end": portfolio_prediction_end,
                 "used_for_selection": False,
             },
             "deployment_gates": {

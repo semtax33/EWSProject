@@ -290,6 +290,9 @@ def build_report(run_dir, output_path):
     investable_instrument = manifest["config"].get(
         "investable_instrument", "KODEX 200 ETF"
     )
+    portfolio_benchmark = manifest["config"].get(
+        "portfolio_benchmark_instrument", investable_instrument
+    )
     quick_smoke = bool(manifest.get("quick_smoke_test", False))
     validation_label = "Pre-2020 smoke OOS" if quick_smoke else "Pre-2020 nested OOS"
     mode_chip = "Quick smoke · 연구판정 금지" if quick_smoke else "Full research run"
@@ -404,7 +407,7 @@ def build_report(run_dir, output_path):
     chart_cumulative = svg_line_chart(
         "누적 수익 배수",
         backtest_rows,
-        (("strategy_curve", "EWS 전략", "s1"), ("market_curve", investable_instrument, "s2")),
+        (("strategy_curve", "EWS 전략", "s1"), ("market_curve", portfolio_benchmark, "s2")),
         y_label="성장 배수",
     )
     chart_allocation = svg_line_chart(
@@ -419,7 +422,7 @@ def build_report(run_dir, output_path):
     chart_drawdown = svg_line_chart(
         "낙폭",
         backtest_rows,
-        (("strategy_drawdown", "EWS 전략", "s1"), ("market_drawdown", investable_instrument, "s3")),
+        (("strategy_drawdown", "EWS 전략", "s1"), ("market_drawdown", portfolio_benchmark, "s3")),
         y_label="낙폭",
         percent_axis=True,
         y_domain=(-40, 2),
@@ -468,7 +471,7 @@ def build_report(run_dir, output_path):
         ("포트폴리오", gates["portfolio_gate"], "비용·동일 익스포저·낙폭"),
         ("Vintage", gates["point_in_time_vintage_gate"], "ALFRED 월말 스냅샷"),
         ("Release timing", gates["release_timing_gate"], "월말 정보, 다음 달 실행"),
-        ("투자 가능 수익률", gates["investable_return_source_gate"], f"{investable_instrument} 조정가격"),
+        ("투자 가능 수익률", gates["investable_return_source_gate"], f"{portfolio_benchmark} 원천"),
         ("운영", gates["operational_gate"], "연구·forward shadow"),
         ("Strict 운영", gates["strict_operational_gate"], "사람 경제성 검토 필요"),
         ("실전 배포", gates["deployment_eligible"], "strict gate 종속"),
@@ -525,7 +528,7 @@ def build_report(run_dir, output_path):
       <p>또한 3개월 중첩 타깃의 holdout 73개월은 단순 비중첩 환산 시 약 {holdout_effective_blocks}개 블록에 불과하고, 분류 정확도는 {pct(mlp_model['accuracy'])}로 naive {pct(mlp_model['naive_accuracy'])}보다 {pct(mlp_model['accuracy_lift_vs_naive'], signed=True)} 낮다. 정확도 자체가 핵심 gate는 아니지만 표본이 작다는 경고다. 따라서 MLP는 별도 nested OOS·배분 정책·게이트 검증을 거친 뒤 새 untouched 기간 또는 forward shadow에서 확인해야 승격할 수 있다.</p>
     </div>"""
 
-    strategy_order = ["Dynamic", "Same Exposure", "Static 50/50", f"{market_name} 100%"]
+    strategy_order = ["Dynamic", "Same Exposure", "Static 50/50", "100%"]
     performance_sorted = sorted(
         logistic_performance,
         key=lambda row: next((i for i, key in enumerate(strategy_order) if key in row["strategy"]), 99),
@@ -550,9 +553,7 @@ def build_report(run_dir, output_path):
     group_total = sum(int(row["configured"]) for row in group_summary)
     dynamic = next(row for row in logistic_performance if row["strategy"] == "Logistic Dynamic")
     same_exposure = next(row for row in logistic_performance if "Same Exposure" in row["strategy"])
-    market = next(
-        row for row in logistic_performance if f"{market_name} 100%" in row["strategy"]
-    )
+    market = next(row for row in logistic_performance if row["strategy"].endswith("100%"))
     generated_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
     css = """
     :root{color-scheme:light;--ink:#152236;--muted:#607089;--line:#dbe3ee;--paper:#f5f7fb;--card:#fff;--navy:#0c1b31;--blue:#2274d6;--cyan:#24a7bd;--orange:#ef8b2c;--red:#d95050;--green:#168465;--violet:#7457c8;--shadow:0 12px 30px rgba(18,37,63,.08)}
@@ -588,7 +589,7 @@ def build_report(run_dir, output_path):
   <div class="kpi"><div class="kpi-label">{esc(validation_label)} AUC</div><div class="kpi-value">{number(signal['aggregate_auc']):.3f}</div><div class="kpi-note">기준 0.50 초과 · signal gate</div></div>
   <div class="kpi"><div class="kpi-label">Pre-2020 Rank IC</div><div class="kpi-value">{number(signal['aggregate_rank_ic']):.3f}</div><div class="kpi-note">fold 공동 통과 {number(signal['fold_joint_direction_pass_ratio'])*100:.0f}%</div></div>
   <div class="kpi"><div class="kpi-label">Holdout 선택전략 Sharpe</div><div class="kpi-value">{number(dynamic['Sharpe']):.2f}</div><div class="kpi-note">{esc(selected_policy_name)} · 동일 익스포저 {number(same_exposure['Sharpe']):.2f}</div></div>
-  <div class="kpi"><div class="kpi-label">Holdout 최대 낙폭</div><div class="kpi-value">{pct(dynamic['MaxDrawdown'])}</div><div class="kpi-note">{esc(investable_instrument)} {pct(market['MaxDrawdown'])}</div></div>
+  <div class="kpi"><div class="kpi-label">Holdout 최대 낙폭</div><div class="kpi-value">{pct(dynamic['MaxDrawdown'])}</div><div class="kpi-note">{esc(portfolio_benchmark)} {pct(market['MaxDrawdown'])}</div></div>
 </section>
 
 <section class="section two-col">
@@ -638,7 +639,7 @@ def build_report(run_dir, output_path):
 </section>
 
 <section class="section"><h2>EWS 대시보드</h2><div class="chart-grid">
-  <figure class="chart-card"><figcaption>누적 수익 <span class="chart-note">투자 가능 {esc(investable_instrument)} 조정가격 기준</span></figcaption>{chart_cumulative}</figure>
+  <figure class="chart-card"><figcaption>누적 수익 <span class="chart-note">{esc(portfolio_benchmark)} 기준</span></figcaption>{chart_cumulative}</figure>
   <figure class="chart-card"><figcaption>EWS와 실행 배분</figcaption>{chart_allocation}</figure>
   <figure class="chart-card"><figcaption>낙폭 비교</figcaption>{chart_drawdown}</figure>
   <figure class="chart-card"><figcaption>Rolling Rank IC</figcaption>{chart_ic}</figure>
@@ -654,13 +655,13 @@ def build_report(run_dir, output_path):
   </article>
   <article class="panel"><h2>Logistic 동일기간 성과</h2>
     <div class="table-wrap"><table class="table"><thead><tr><th>전략</th><th class="num">CAGR</th><th class="num">Sharpe</th><th class="num">MDD</th><th class="num">Calmar</th><th class="num">월 승률</th></tr></thead><tbody>{performance_rows}</tbody></table></div>
-    <p class="small muted">Dynamic은 {esc(investable_instrument)}의 CAGR {pct(market['CAGR'])}와 비교되며 MDD는 {pct(dynamic['MaxDrawdown'])}다. Static 50/50의 MDD는 {pct(next(row for row in logistic_performance if 'Static 50/50' in row['strategy'])['MaxDrawdown'])}다.</p>
+    <p class="small muted">Dynamic은 {esc(portfolio_benchmark)}의 CAGR {pct(market['CAGR'])}와 비교되며 MDD는 {pct(dynamic['MaxDrawdown'])}다. Static 50/50의 MDD는 {pct(next(row for row in logistic_performance if 'Static 50/50' in row['strategy'])['MaxDrawdown'])}다.</p>
   </article>
 </section>
 
 <section class="section panel"><h2>Point-in-time 및 투자 가능성 감사</h2>
   <div class="table-wrap"><table class="table"><thead><tr><th>역할</th><th>원천</th><th>종류</th><th>가용시점 처리</th><th>판정</th></tr></thead><tbody>{source_rows}</tbody></table></div>
-  <p class="small muted">T10Y2Y와 현금 leg DGS3MO는 월말 ALFRED vintage를 사용한다. 시장내부 지표는 완료된 월말 관측을 다음 달에 실행한다. {esc(investable_instrument)} adjusted close는 배당·분할 조정 투자 가능 수익률로 사용했다.</p>
+  <p class="small muted">T10Y2Y와 현금 leg DGS3MO는 월말 ALFRED vintage를 사용한다. 시장내부 지표는 완료된 월말 관측을 다음 달에 실행한다. 포트폴리오 성과 기준은 {esc(portfolio_benchmark)}다.</p>
 </section>
 
 <section class="section two-col">
