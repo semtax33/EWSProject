@@ -314,3 +314,23 @@ EWS_Project/
 ```
 
 더 자세한 연구 설계, gate 정의, MLP shadow 운영은 [RUNBOOK.md](RUNBOOK.md), 원자료 확장 절차는 [RAW_SERIES_RUNBOOK.md](RAW_SERIES_RUNBOOK.md)를 참고하십시오.
+
+# Hankyung Consensus EPS dispersion
+
+`download_hankyung_eps.py` downloads Korean company reports from Hankyung
+Consensus, normalizes both the legacy `STOCK_EPS1~3` fields and the current
+`STOCK_PRE_EPS` field, and calculates EPS estimate dispersion by stock and
+fiscal period. The default is sample standard deviation after keeping the most
+recent estimate from each brokerage in the requested date window.
+
+```powershell
+$env:HANKYUNG_API_TOKEN = "your-token"
+python download_hankyung_eps.py --from-date 2026-05-01 --to-date 2026-08-18
+```
+
+The command creates `Data/hankyung_eps_estimates.csv` (normalized raw
+estimates) and `Data/hankyung_eps_dispersion.csv` (the summary). Use `--ddof 0`
+for population standard deviation or `--dedupe-by none` to count every report.
+Exact-zero EPS values, which the API often uses for unavailable estimates, are
+kept in the raw file with `is_zero_eps=true` but excluded from the summary by
+default. Pass `--include-zero-eps` when zero is known to be a real estimate.
