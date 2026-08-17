@@ -1,0 +1,8 @@
+tmp/
+Data/
+reports/
+runs/
+*.csv
+*.pyc
+__pycache__/**
+__pycache/
